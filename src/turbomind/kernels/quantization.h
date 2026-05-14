@@ -18,4 +18,20 @@ void QuantizeGroupwise(Tensor            quant,    // (m,k)
                        Buffer_<unsigned> rbits,    // (m*k)
                        int               group_size);
 
+// Quantize BF16 input to FP8 e4m3 using a pre-determined (static) per-tensor scale.
+// out.dtype() must be kFloat8_e4m3; scale is a device scalar Tensor of dtype kFloat.
+void QuantizeStatic(Tensor& out, const Tensor& in, const Tensor& scale, cudaStream_t st);
+
+// Quantize BF16 activations to NVFP4 (e2m1) with per-group FP8 e4m3 block scales.
+// group_size is fixed at 16 (kNvfp4GroupSize).
+// out:       [num_tokens, hidden_dim/2]  kUint8       (2 FP4 nibbles per byte, lo=even col)
+// scale_out: [num_tokens, hidden_dim/16] kFloat8_e4m3 (per-group scale)
+// in:        [num_tokens, hidden_dim]    kBfloat16
+// global_scale: second-level (tensor-wide) scale applied before quantization
+void invokeQuantizeTrtllmFp4MoeActivation(Tensor&      out,
+                                          Tensor&      scale_out,
+                                          const Tensor& in,
+                                          float        global_scale,
+                                          cudaStream_t st);
+
 }  // namespace turbomind

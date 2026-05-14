@@ -231,8 +231,13 @@ template<class T>
 void invokeTranspose2D(T* dst, const T* src, int rows, int cols, cudaStream_t st)
 {
     if constexpr (sizeof(T) == 4) {
-        // FT_CHECK(0);
         invokeTranspose2D_((uint32_t*)dst, (const uint32_t*)src, rows, cols, st);
+    }
+    else if constexpr (sizeof(T) == 2) {
+        invokeTranspose2D_((uint16_t*)dst, (const uint16_t*)src, rows, cols, st);
+    }
+    else if constexpr (sizeof(T) == 1) {
+        invokeTranspose2D_((uint8_t*)dst, (const uint8_t*)src, rows, cols, st);
     }
     else {
         FT_CHECK(0);
@@ -243,5 +248,27 @@ void invokeEmbeddingLookup(Ref<Tensor>         out_,
                            const Buffer_<int>& token_ids,
                            const Tensor&       embedding_table,
                            cudaStream_t        st);
+
+// MoE weight packing: transpose per-expert weight matrices into trtllm expected layout.
+// Fc1 packs [hidden_dim, 2*inter_size] -> [2*inter_size, hidden_dim].
+// Fc2 packs [inter_size, hidden_dim]   -> [hidden_dim, inter_size].
+void invokePackTrtllmFp8MoeFc1(uint8_t* dst, const uint8_t* src, int hidden_dim, int inter_size, cudaStream_t st);
+void invokePackTrtllmFp8MoeFc2(uint8_t* dst, const uint8_t* src, int inter_size, int hidden_dim, cudaStream_t st);
+void invokePackTrtllmBf16MoeFc1(void* dst, const void* src, int hidden_dim, int inter_size, cudaStream_t st);
+void invokePackTrtllmBf16MoeFc2(void* dst, const void* src, int inter_size, int hidden_dim, cudaStream_t st);
+void invokePackTrtllmFp4MoeFc1(uint8_t* dst, const uint8_t* src, int hidden_dim, int inter_size, cudaStream_t st);
+void invokePackTrtllmFp4MoeFc2(uint8_t* dst, const uint8_t* src, int inter_size, int hidden_dim, cudaStream_t st);
+void invokePackTrtllmFp4MoeFc1Scale(uint8_t*       dst,
+                                    const uint8_t* src,
+                                    int            hidden_dim,
+                                    int            inter_size,
+                                    int            group_size,
+                                    cudaStream_t   st);
+void invokePackTrtllmFp4MoeFc2Scale(uint8_t*       dst,
+                                    const uint8_t* src,
+                                    int            inter_size,
+                                    int            hidden_dim,
+                                    int            group_size,
+                                    cudaStream_t   st);
 
 }  // namespace turbomind

@@ -669,4 +669,116 @@ void QuantizeGroupwise(Tensor            quant,    // (m,k)
     }
 }
 
+// ---------------------------------------------------------------------------
+// QuantizeStatic: BF16 -> FP8 e4m3 with a fixed per-tensor scale (device ptr)
+// ---------------------------------------------------------------------------
+
+__global__ void quantize_static_bf16_fp8_kernel(fp8_e4m3_t*          out,
+                                                const __nv_bfloat16* in,
+                                                const float*         scale_ptr,
+                                                int                  N)
+{
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= N)
+        return;
+    const float inv_scale = 1.0f / *scale_ptr;
+    float       val       = __bfloat162float(in[idx]) * inv_scale;
+    val                   = fmaxf(fminf(val, 448.f), -448.f);
+    out[idx]              = fp8_e4m3_t(val);
+}
+
+void QuantizeStatic(Tensor& out, const Tensor& in, const Tensor& scale, cudaStream_t st)
+{
+    TM_CHECK_EQ(in.dtype(), kBfloat16);
+    TM_CHECK_EQ(out.dtype(), kFloat8_e4m3);
+    TM_CHECK_EQ(scale.dtype(), kFloat);
+    TM_CHECK_GE(scale.size(), 1);
+    TM_CHECK_EQ(in.size(), out.size());
+
+    const int      N     = (int)in.size();
+    constexpr int  block = 256;
+    const int      grid  = (N + block - 1) / block;
+    quantize_static_bf16_fp8_kernel<<<grid, block, 0, st>>>(
+        out.data<fp8_e4m3_t>(), in.data<__nv_bfloat16>(), scale.data<float>(), N);
+}
+
+// ---------------------------------------------------------------------------
+// invokeQuantizeTrtllmFp4MoeActivation: BF16 -> NVFP4 with per-group FP8 scales
+// Group size = 16 (kNvfp4GroupSize). Each group of 16 BF16 elements produces:
+//   - one FP8 e4m3 block scale = absmax / fp4_max / global_scale
+//   - 8 output bytes = 16 packed FP4 nibbles (lo nibble = even column element)
+// ---------------------------------------------------------------------------
+
+__global__ void quantize_fp4_act_kernel(uint8_t*             out_fp4,
+                                        fp8_e4m3_t*          out_scale,
+                                        const __nv_bfloat16* in,
+                                        float                global_scale,
+                                        int                  num_tokens,
+                                        int                  hidden_dim)
+{
+    constexpr int   GROUP_SIZE = 16;
+    constexpr float FP4_MAX    = 6.0f;
+
+    const int tok = blockIdx.y;
+    const int grp = blockIdx.x * blockDim.x + threadIdx.x;
+    const int num_groups = hidden_dim / GROUP_SIZE;
+
+    if (tok >= num_tokens || grp >= num_groups)
+        return;
+
+    const __nv_bfloat16* row = in + (int64_t)tok * hidden_dim + grp * GROUP_SIZE;
+
+    float absmax = 0.f;
+    for (int i = 0; i < GROUP_SIZE; ++i) {
+        absmax = fmaxf(absmax, fabsf(__bfloat162float(row[i])));
+    }
+
+    // Per-group scale stored as FP8 e4m3
+    const float group_scale_f32 = absmax / (FP4_MAX * global_scale);
+    out_scale[tok * num_groups + grp] = fp8_e4m3_t(fminf(group_scale_f32, 448.f));
+
+    // Quantize and pack 2 FP4 values per output byte
+    const float inv_denom = (absmax > 0.f) ? (FP4_MAX / absmax) : 0.f;
+    uint8_t*    out_row   = out_fp4 + (int64_t)tok * (hidden_dim / 2) + grp * (GROUP_SIZE / 2);
+
+    for (int i = 0; i < GROUP_SIZE; i += 2) {
+        float v0 = fmaxf(fminf(__bfloat162float(row[i]) * inv_denom, FP4_MAX), -FP4_MAX);
+        float v1 = fmaxf(fminf(__bfloat162float(row[i + 1]) * inv_denom, FP4_MAX), -FP4_MAX);
+
+        auto n0 = (uint8_t)(FloatingPoint<2, 1>::from_f32(v0, 0U) & 0xFU);
+        auto n1 = (uint8_t)(FloatingPoint<2, 1>::from_f32(v1, 0U) & 0xFU);
+
+        out_row[i >> 1] = n0 | (n1 << 4);
+    }
+}
+
+void invokeQuantizeTrtllmFp4MoeActivation(Tensor&       out,
+                                          Tensor&       scale_out,
+                                          const Tensor& in,
+                                          float         global_scale,
+                                          cudaStream_t  st)
+{
+    TM_CHECK_EQ(in.dtype(), kBfloat16);
+    TM_CHECK_EQ(out.dtype(), kUint8);
+    TM_CHECK_EQ(scale_out.dtype(), kFloat8_e4m3);
+
+    constexpr int GROUP_SIZE = 16;
+    const int     num_tokens = (int)in.shape(0);
+    const int     hidden_dim = (int)in.shape(1);
+    TM_CHECK_EQ(hidden_dim % GROUP_SIZE, 0);
+
+    const float eff_global_scale = (global_scale > 0.f) ? global_scale : 1.f;
+
+    constexpr int block_x = 128;
+    const dim3    block(block_x, 1);
+    const dim3    grid((hidden_dim / GROUP_SIZE + block_x - 1) / block_x, num_tokens);
+
+    quantize_fp4_act_kernel<<<grid, block, 0, st>>>(out.data<uint8_t>(),
+                                                    scale_out.data<fp8_e4m3_t>(),
+                                                    in.data<__nv_bfloat16>(),
+                                                    eff_global_scale,
+                                                    num_tokens,
+                                                    hidden_dim);
+}
+
 }  // namespace turbomind

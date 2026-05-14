@@ -25,7 +25,8 @@ add_library(models STATIC
         llama/llama_utils.cu
         llama/mla_utils.cu
         llama/GatedDeltaNetLayer.cc
-        llama/gated_delta_net_kernels.cu)
+        llama/gated_delta_net_kernels.cu
+        llama/trtllm_fused_moe_backend.cc)
 set_property(TARGET models PROPERTY POSITION_INDEPENDENT_CODE ON)
 set_property(TARGET models PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS ON)
 target_link_libraries(models PUBLIC
@@ -45,7 +46,9 @@ target_link_libraries(models PUBLIC
         gpt_kernels
         memory_utils
         cuda_utils
-        anomaly_handler)
+        anomaly_handler
+        trtllm_attention
+        trtllm_fused_moe_wrapper)
 target_compile_options(models PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xptxas=-v --generate-line-info --threads 8>)
 
 if(BUILD_TEST)

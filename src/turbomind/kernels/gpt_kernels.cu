@@ -208,5 +208,87 @@ void invokeTranspose2D_(T* dst, const T* src, int rows, int cols, cudaStream_t s
 }
 
 template void invokeTranspose2D_(uint32_t*, const uint32_t*, int, int, cudaStream_t);
+template void invokeTranspose2D_(uint16_t*, const uint16_t*, int, int, cudaStream_t);
+template void invokeTranspose2D_(uint8_t*, const uint8_t*, int, int, cudaStream_t);
+
+// Transpose packed FP4 matrix: [K, N] FP4 -> [N, K] FP4.
+// Input stored as [K, N/2] bytes (2 FP4 nibbles per byte, lo nibble = even column).
+// Output stored as [N, K/2] bytes.
+// K = rows (hidden_dim), N = cols (2*inter_size or hidden_dim) in FP4 element count.
+__global__ void transpose_fp4_kernel(uint8_t* __restrict__ dst, const uint8_t* __restrict__ src, int K, int N)
+{
+    // Each thread produces one output byte = two transposed nibbles.
+    // dst[j, i>>1] lo = fp4(i, j),  hi = fp4(i+1, j)  where i is even.
+    int i = (blockIdx.x * blockDim.x + threadIdx.x) * 2;  // even col in output FP4 space (0..K-2)
+    int j = blockIdx.y * blockDim.y + threadIdx.y;          // row in output FP4 space (0..N-1)
+
+    if (i >= K || j >= N)
+        return;
+
+    // Input element (i, j): byte at [i, j/2], nibble at (j & 1)*4
+    uint8_t b0 = src[i * (N / 2) + (j >> 1)];
+    uint8_t n0 = (j & 1) ? (b0 >> 4) : (b0 & 0xF);
+
+    // Input element (i+1, j): byte at [i+1, j/2], nibble at (j & 1)*4
+    uint8_t b1 = src[(i + 1) * (N / 2) + (j >> 1)];
+    uint8_t n1 = (j & 1) ? (b1 >> 4) : (b1 & 0xF);
+
+    // Output byte at [j, i/2]: lo nibble = fp4(i,j), hi nibble = fp4(i+1,j)
+    dst[j * (K / 2) + (i >> 1)] = n0 | (n1 << 4);
+}
+
+// Fc1: [K=hidden_dim, N=2*inter_size] FP4 -> [N=2*inter_size, K=hidden_dim] FP4
+void invokePackTrtllmFp8MoeFc1(uint8_t* dst, const uint8_t* src, int hidden_dim, int inter_size, cudaStream_t st)
+{
+    invokeTranspose2D_(dst, src, hidden_dim, 2 * inter_size, st);
+}
+
+void invokePackTrtllmFp8MoeFc2(uint8_t* dst, const uint8_t* src, int inter_size, int hidden_dim, cudaStream_t st)
+{
+    invokeTranspose2D_(dst, src, inter_size, hidden_dim, st);
+}
+
+void invokePackTrtllmBf16MoeFc1(void* dst, const void* src, int hidden_dim, int inter_size, cudaStream_t st)
+{
+    invokeTranspose2D_((uint16_t*)dst, (const uint16_t*)src, hidden_dim, 2 * inter_size, st);
+}
+
+void invokePackTrtllmBf16MoeFc2(void* dst, const void* src, int inter_size, int hidden_dim, cudaStream_t st)
+{
+    invokeTranspose2D_((uint16_t*)dst, (const uint16_t*)src, inter_size, hidden_dim, st);
+}
+
+void invokePackTrtllmFp4MoeFc1(uint8_t* dst, const uint8_t* src, int hidden_dim, int inter_size, cudaStream_t st)
+{
+    // FP4 element count: K=hidden_dim, N=2*inter_size
+    // Launch: (K/2) pairs in x, N rows in y
+    const dim3 block(16, 16);
+    const dim3 grid((hidden_dim / 2 + block.x - 1) / block.x, (2 * inter_size + block.y - 1) / block.y);
+    transpose_fp4_kernel<<<grid, block, 0, st>>>(dst, src, hidden_dim, 2 * inter_size);
+}
+
+void invokePackTrtllmFp4MoeFc2(uint8_t* dst, const uint8_t* src, int inter_size, int hidden_dim, cudaStream_t st)
+{
+    // FP4 element count: K=inter_size, N=hidden_dim
+    const dim3 block(16, 16);
+    const dim3 grid((inter_size / 2 + block.x - 1) / block.x, (hidden_dim + block.y - 1) / block.y);
+    transpose_fp4_kernel<<<grid, block, 0, st>>>(dst, src, inter_size, hidden_dim);
+}
+
+void invokePackTrtllmFp4MoeFc1Scale(
+    uint8_t* dst, const uint8_t* src, int hidden_dim, int inter_size, int group_size, cudaStream_t st)
+{
+    // Scales: [K/G, N] -> [N, K/G] FP8 (uint8)
+    // K=hidden_dim, N=2*inter_size, G=group_size
+    invokeTranspose2D_(dst, src, hidden_dim / group_size, 2 * inter_size, st);
+}
+
+void invokePackTrtllmFp4MoeFc2Scale(
+    uint8_t* dst, const uint8_t* src, int inter_size, int hidden_dim, int group_size, cudaStream_t st)
+{
+    // Scales: [K/G, N] -> [N, K/G] FP8 (uint8)
+    // K=inter_size, N=hidden_dim, G=group_size
+    invokeTranspose2D_(dst, src, inter_size / group_size, hidden_dim, st);
+}
 
 }  // namespace turbomind

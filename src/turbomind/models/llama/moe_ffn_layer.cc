@@ -23,7 +23,8 @@ MoeFfnLayer::MoeFfnLayer(const EngineParam& engine, const Context& ctx):
     max_token_num_(engine.max_forward_token_num * engine.attn_dp_size),
     is_warm_up_(*ctx.is_warm_up),
     linear_(*ctx.linear),
-    expert_ffn_(std::make_unique<LlamaFfnLayer>(ctx))
+    expert_ffn_(std::make_unique<LlamaFfnLayer>(ctx)),
+    engine_param_(engine)
 {
 }
 
@@ -59,6 +60,38 @@ Tensor_<float> MoeFfnLayer::Gate(const Tensor& input, const LinearWeight& gate)
     return logits;
 }
 
+// Build ModelParam / MoeParam from a MoeWeight and the engine, to construct TrtllmFusedMoeBackend.
+static ModelParam MakeModelParam(const MoeWeight& moe, const EngineParam& engine)
+{
+    ModelParam m;
+    if (auto* blk = moe.block()) {
+        m.hidden_units = blk->hidden_dim;
+    }
+    m.layer_num     = 0;  // cache resizes on demand
+    m.moe_quant_algo = "";
+    return m;
+}
+
+static MoeParam MakeMoeParam(const MoeWeight& moe, const EngineParam& engine)
+{
+    MoeParam p;
+    if (auto* blk = moe.block()) {
+        // inter_size in weights is already per-tp; pass the global value so the
+        // backend's constructor (which divides by mlp_tp_size) arrives at the right number.
+        p.inter_size = blk->inter_size * std::max(1, engine.mlp_tp_size);
+    }
+    p.expert_num       = {moe.num_experts()};
+    p.experts_per_token = moe.experts_per_token;
+    p.n_group          = moe.n_group;
+    p.topk_group       = moe.topk_group;
+    p.topk_method      = moe.topk_method;
+    p.norm_topk_prob   = moe.norm_topk_prob;
+    p.routed_scale     = moe.routed_scale;
+    p.scoring_func     = moe.scoring_func;
+    p.method           = MoeParam::kFused;
+    return p;
+}
+
 void MoeFfnLayer::Forward(ForwardParam& p)
 {
     if (!initialized_) {
@@ -79,6 +112,55 @@ void MoeFfnLayer::Forward(ForwardParam& p)
     FT_CHECK(expert_num);
 
     auto logits = Gate(p.input, *moe.gate.get());
+
+    // --- trtllm fused MoE dispatch ---
+    trtllm_handled_ = false;
+    if (TrtllmFusedMoeBackend::ShouldUse(engine_param_.moe_backend)) {
+        // Lazy-construct backend on first call
+        if (!trtllm_backend_) {
+            trtllm_backend_ = std::make_unique<TrtllmFusedMoeBackend>(
+                MakeModelParam(moe, engine_param_), MakeMoeParam(moe, engine_param_), engine_param_);
+        }
+
+        // Build or reuse a MoeFfnWeight view (lightweight, built once per layer_id)
+        auto it = trtllm_weight_cache_.find(p.layer_id);
+        if (it == trtllm_weight_cache_.end()) {
+            auto res = trtllm_weight_cache_.emplace(p.layer_id, MoeFfnWeight::from(*p.weights));
+            it       = res.first;
+        }
+        MoeFfnWeight& moe_fn = it->second;
+
+        // Prepare (idempotent after first call)
+        trtllm_backend_->PrepareWeights(moe_fn, p.layer_id);
+
+        // Only dispatch if weights are in a supported format and there's no shared expert
+        // (shared-expert combine path requires native routing accounting; defer to native).
+        if (trtllm_backend_->RequiresDispatch(moe_fn) && !moe_fn.shared_gate_weight) {
+            TrtllmFusedMoeBackend::DispatchParam dp;
+            dp.input         = p.input;
+            dp.output        = p.output;
+            dp.weights       = &moe_fn;
+            dp.logits        = &logits;
+            dp.masks         = nullptr;
+            dp.scales        = nullptr;
+            dp.tokens_padded = (int)padded;
+            dp.layer_id      = p.layer_id;
+
+            // w4a8 path needs native routing masks / scales
+            if (trtllm_backend_->NeedsNativeRouting(moe_fn)) {
+                dp.masks  = &masks_;
+                dp.scales = &scales_;
+            }
+
+            auto result = trtllm_backend_->Dispatch(dp);
+            if (result.ok) {
+                trtllm_handled_ = true;
+                return;
+            }
+            // Fall through to native path on dispatch failure
+        }
+    }
+    // ---------------------------------
 
     TM_DEBUG_TENSOR(logits, "logits", 2);
 
@@ -197,6 +279,12 @@ void MoeFfnLayer::Forward(ForwardParam& p)
 
 void MoeFfnLayer::Combine(ForwardParam& p)
 {
+    // trtllm dispatch already wrote the final output; nothing to combine.
+    if (trtllm_handled_) {
+        trtllm_handled_ = false;
+        return;
+    }
+
     auto& moe = *p.weights;
 
     invokeMoeCombine(p.output,

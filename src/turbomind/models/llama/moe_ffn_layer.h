@@ -2,10 +2,15 @@
 
 #pragma once
 
+#include <memory>
+#include <unordered_map>
+
 #include "src/turbomind/kernels/gemm/context.h"
 #include "src/turbomind/kernels/gemm/moe_utils_v2.h"
 #include "src/turbomind/models/llama/LlamaFfnLayer.h"
+#include "src/turbomind/models/llama/LlamaDenseWeight.h"
 #include "src/turbomind/models/llama/llama_params.h"
+#include "src/turbomind/models/llama/trtllm_fused_moe_backend.h"
 #include "src/turbomind/models/moe_weight.h"
 
 namespace turbomind {
@@ -57,6 +62,14 @@ private:
 
     Tensor         temp_;
     Tensor_<float> shared_scales_;
+    ///////////////////////////////////////////////////////
+
+    ///////////////////////////////////////////////////////
+    /// trtllm fused MoE dispatch
+    EngineParam                            engine_param_;
+    std::unique_ptr<TrtllmFusedMoeBackend> trtllm_backend_;
+    std::unordered_map<int, MoeFfnWeight>  trtllm_weight_cache_;  // keyed by layer_id
+    bool                                   trtllm_handled_{false};  // trtllm fully handled this forward step
     ///////////////////////////////////////////////////////
 };
 
