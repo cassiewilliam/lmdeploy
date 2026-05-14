@@ -136,16 +136,17 @@ inline void myAssert(bool result, const char* const file, int const line, std::s
     }
 }
 
-#define FT_CHECK(val) myAssert(bool(val), __FILE__, __LINE__)
-#define FT_CHECK_WITH_INFO(val, info)                                                                                  \
+#define FT_CHECK(val) turbomind::myAssert(bool(val), __FILE__, __LINE__)
+#define CHECK_CUDA_ERROR(val) ::turbomind::check((val), #val, __FILE__, __LINE__)
+#define FT_CHECK_WITH_INFO(val, ...)                                                                                   \
     do {                                                                                                               \
         bool is_valid_val = bool(val);                                                                                 \
         if (!is_valid_val) {                                                                                           \
-            turbomind::myAssert(is_valid_val, __FILE__, __LINE__, (info));                                             \
+            turbomind::myAssert(is_valid_val, __FILE__, __LINE__, turbomind::fmtstr(__VA_ARGS__));                     \
         }                                                                                                              \
     } while (0)
 
-#define FT_THROW(info) throwRuntimeError(__FILE__, __LINE__, info)
+#define FT_THROW(...) turbomind::throwRuntimeError(__FILE__, __LINE__, turbomind::fmtstr(__VA_ARGS__))
 
 /* ***************************** common utils ****************************** */
 
@@ -153,12 +154,34 @@ int getSMVersion();
 
 int getSMCount();
 
+// `cudaDevAttrMaxThreadsPerMultiProcessor` for the current device.
+// Used by occupancy / wave-efficiency grid-size calculators that need to
+// reason about thread budget per SM.  Cached on the first call (the
+// underlying cudaDeviceGetAttribute is cheap but not free, and these
+// values never change for a given device).
+int getMaxThreadsPerSM();
+
+// True on Blackwell SM100/SM103 (B200 / B300).
+bool isSM10x();
+
 std::string getDeviceName();
 
 template<class T>
 inline T div_up(T a, T n)
 {
     return (a + n - 1) / n;
+}
+
+/// Get the free/total device memory (bytes). Passing useUvm=true reports host
+/// memory instead (for UVM KV cache).  Ported from aip/0.10.0 for the FMHA
+/// runner's memory-budget checks.
+inline std::tuple<size_t, size_t> getDeviceMemoryInfo(bool const useUvm)
+{
+    (void)useUvm;  // UVM path intentionally elided; not used by fmha runner
+    size_t free  = 0;
+    size_t total = 0;
+    cudaMemGetInfo(&free, &total);
+    return {free, total};
 }
 
 int getDevice();

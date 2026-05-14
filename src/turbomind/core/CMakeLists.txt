@@ -28,7 +28,8 @@ add_library(core STATIC
         module.cc
         registry.cc
         copy.cc
-        logger.cc)
+        logger.cc
+        memory_buffers.cc)
 
 target_link_libraries(core PUBLIC cuda_utils CUDA::cudart CUDA::cuda_driver fmt::fmt concurrentqueue)
 

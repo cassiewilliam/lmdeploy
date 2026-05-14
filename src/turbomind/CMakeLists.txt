@@ -15,6 +15,7 @@
 add_subdirectory(utils)
 add_subdirectory(core)
 add_subdirectory(kernels)
+add_subdirectory(flashinfer)
 add_subdirectory(comm)
 add_subdirectory(generation)
 add_subdirectory(models)

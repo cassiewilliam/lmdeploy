@@ -18,7 +18,54 @@ enum QuantPolicy
     // quantize cache kv
     kCacheKVInt8 = 0x08,
     kCacheKVInt4 = 0x04,
+    kCacheKVFP8 = 0x10,
+    kCacheKVFP4 = 0x20,
 };
+
+inline bool IsCacheKVFP8(int quant_policy)
+{
+    return (quant_policy & QuantPolicy::kCacheKVFP8) != 0;
+}
+
+inline bool IsCacheKVFP4(int quant_policy)
+{
+    return (quant_policy & QuantPolicy::kCacheKVFP4) != 0;
+}
+
+inline bool IsCacheKVFP(int quant_policy)
+{
+    return IsCacheKVFP8(quant_policy) || IsCacheKVFP4(quant_policy);
+}
+
+inline bool IsSupportedQuantPolicy(int quant_policy)
+{
+    return quant_policy == QuantPolicy::kNone || quant_policy == QuantPolicy::kCacheKVInt4
+           || quant_policy == QuantPolicy::kCacheKVInt8 || quant_policy == QuantPolicy::kCacheKVFP8
+           || quant_policy == QuantPolicy::kCacheKVFP4;
+}
+
+inline int KvCacheElemBits(int quant_policy, int default_bits)
+{
+    if (quant_policy & (QuantPolicy::kCacheKVInt4 | QuantPolicy::kCacheKVFP4)) {
+        return 4;
+    }
+    if (quant_policy & (QuantPolicy::kCacheKVInt8 | QuantPolicy::kCacheKVFP8)) {
+        return 8;
+    }
+    return default_bits;
+}
+
+inline const char* QuantPolicyName(int quant_policy)
+{
+    switch (quant_policy) {
+        case QuantPolicy::kNone: return "none";
+        case QuantPolicy::kCacheKVInt4: return "kCacheKVInt4";
+        case QuantPolicy::kCacheKVInt8: return "kCacheKVInt8";
+        case QuantPolicy::kCacheKVFP8: return "kCacheKVFP8";
+        case QuantPolicy::kCacheKVFP4: return "kCacheKVFP4";
+        default: return "unknown";
+    }
+}
 
 enum CmpMode
 {

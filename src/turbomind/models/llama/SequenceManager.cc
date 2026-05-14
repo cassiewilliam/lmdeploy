@@ -9,6 +9,7 @@
 #include "src/turbomind/kernels/attention/block.h"
 #include "src/turbomind/models/llama/BlockManager.h"
 #include "src/turbomind/models/llama/SequenceManager.h"
+#include "src/turbomind/models/llama/llama_utils.h"
 
 // #include "dbg.h"
 
@@ -102,21 +103,20 @@ SequenceManager::SequenceManager(int                     head_dim,
     }
 
     const int dbits     = byte_size(runtime_dtype, 8);
-    const int elem_bits = quant_policy ? quant_policy : dbits;
+    const int elem_bits = KvCacheElemBits(quant_policy, dbits);
 
     BlockConfig block_config{
         head_dim,
         kv_head_num,
         cache_block_seq_len,
+        cache_layer_num,
         elem_bits == dbits ? 0 : dbits,
         elem_bits,
         head_dim == 576,  // share kv
     };
 
-    block::Layout layout{block_config};
-    // dump(layout);
-
-    size_t block_size = layout.block_size(cache_layer_num);
+    block::LayoutBlockPagedKV<BlockConfig>  layout_block{block_config};
+    const size_t block_size = layout_block.page_block_size();
 
     if (num_linear_layers > 0 && block_count < 1.) {
         const size_t linear_bytes = pooled_conv_states_.byte_size() + pooled_recurrent_states_.byte_size();

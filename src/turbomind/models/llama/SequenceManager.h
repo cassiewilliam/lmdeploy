@@ -77,6 +77,7 @@ public:
         int head_dim_;
         int head_num_;
         int block_len_;
+        int layer_num_;          // total cache layers (= cache_layer_num)
         int t_bits_;
         int q_bits_;
         bool share_kv_;
@@ -85,6 +86,7 @@ public:
         int head_dim() const { return head_dim_; }
         int head_num() const { return head_num_; }
         int block_len() const { return block_len_; }
+        int layer_num() const { return layer_num_; }
         bool is_share_kv() const { return share_kv_; }
     };
     // clang-format on

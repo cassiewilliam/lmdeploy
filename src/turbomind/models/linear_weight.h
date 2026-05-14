@@ -93,7 +93,9 @@ public:
     X(weight)                                                                                                          \
     X(bias)                                                                                                            \
     X(scales)                                                                                                          \
-    X(zeros)
+    X(zeros)                                                                                                           \
+    X(scale_2)       /* second-level scales for NVFP4 (global tensor-wise scale) */                                    \
+    X(input_scales)  /* per-layer activation quantization scale */
 
     TM_MODULE_DECLARE(LinearWeight, LINEAR_WEIGHT_CHILDREN, LINEAR_WEIGHT_PARAMS)
 

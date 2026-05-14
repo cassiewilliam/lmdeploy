@@ -35,6 +35,10 @@ if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "11")
   add_definitions("-DENABLE_BF16")
 endif()
 
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "12")
+  add_definitions("-DENABLE_FP8")
+endif()
+
 set(CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake/Modules)
 
 option(BUILD_MULTI_GPU "Build multi-gpu support" ON)
@@ -266,8 +270,11 @@ if(ARCH STREQUAL "x86_64")
     if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "12.8")
       list(APPEND CMAKE_CUDA_ARCHITECTURES 100a-real) # B200
     endif()
+    if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "12.9")
+      list(APPEND CMAKE_CUDA_ARCHITECTURES 103a-real) # B300
+    endif()
     if (MSVC)
-      list(REMOVE_ITEM CMAKE_CUDA_ARCHITECTURES 80-real 90a-real 100a-real)
+      list(REMOVE_ITEM CMAKE_CUDA_ARCHITECTURES 80-real 90a-real 100a-real 103a-real)
     endif ()
   endif ()
 elseif(ARCH STREQUAL "aarch64")
@@ -279,6 +286,10 @@ else()
 endif()
 
 message(STATUS "Building with CUDA archs: ${CMAKE_CUDA_ARCHITECTURES}")
+
+# Preserve the original arch list so cubin-filtering code (fmha/attention) can
+# see suffixed entries like "100a-real"/"103a-real" and decide whether to include SM10x cubins.
+set(CMAKE_CUDA_ARCHITECTURES_ORIG "${CMAKE_CUDA_ARCHITECTURES}")
 
 set(CMAKE_CUDA_RUNTIME_LIBRARY Shared)
 set(CMAKE_C_FLAGS_DEBUG    "${CMAKE_C_FLAGS_DEBUG}    -Wall -O0")

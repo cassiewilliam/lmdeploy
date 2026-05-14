@@ -94,7 +94,7 @@ public:
     X(NormWeight, q_a_layernorm)                                                                                       \
     X(NormWeight, kv_a_layernorm)
 
-#define ATTENTION_WEIGHT_PARAMS(X) X(sinks)
+#define ATTENTION_WEIGHT_PARAMS(X) X(sinks) X(qkv_scale_orig)
 
     TM_MODULE_DECLARE(AttentionWeight, ATTENTION_WEIGHT_CHILDREN, ATTENTION_WEIGHT_PARAMS)
 

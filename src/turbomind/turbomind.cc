@@ -36,6 +36,34 @@ using std::string;
 using std::shared_ptr;
 using std::unique_ptr;
 
+static AttentionBackend ParseAttentionBackend(const std::string& value)
+{
+    if (value.empty() || value == "default") {
+        return AttentionBackend::kDefault;
+    }
+    if (value == "trtllm_fmha") {
+        return AttentionBackend::kTrtllmFmha;
+    }
+    TM_LOG_WARNING("[attention] backend=\"%s\" not recognised; valid values are {default, trtllm_fmha}. "
+                   "Falling back to 'default'.",
+                   value.c_str());
+    return AttentionBackend::kDefault;
+}
+
+static MoeBackend ParseMoeBackend(const std::string& value)
+{
+    if (value.empty() || value == "default") {
+        return MoeBackend::kDefault;
+    }
+    if (value == "trtllm_fused_moe") {
+        return MoeBackend::kTrtllmFusedMoe;
+    }
+    TM_LOG_WARNING("[moe] backend=\"%s\" not recognised; valid values are {default, trtllm_fused_moe}. "
+                   "Falling back to 'default'.",
+                   value.c_str());
+    return MoeBackend::kDefault;
+}
+
 struct TurboMind::Impl {
     DataType    data_type_;
     EngineParam engine_param_;
@@ -153,6 +181,10 @@ TurboMind::Impl::Impl(string model_dir, EngineConfig config, FFICtxFactory ffi_c
 
     // Copy config into the EngineConfig base of engine_param_
     static_cast<EngineConfig&>(engine_param_) = config;
+
+    // Parse string backends from EngineConfig into typed fields of EngineParam
+    engine_param_.attention_backend = ParseAttentionBackend(config.attention_backend);
+    engine_param_.moe_backend       = ParseMoeBackend(config.moe_backend);
 
     phases_ = config.async_ ? 2 : 1;
 

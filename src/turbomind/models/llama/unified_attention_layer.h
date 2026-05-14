@@ -22,11 +22,14 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <memory>
 #include <vector>
 
 #include "src/turbomind/core/core.h"
 #include "src/turbomind/engine/batch.h"
 #include "src/turbomind/kernels/attention/cp_utils.h"
+#include "src/turbomind/core/buffer.h"
+#include "src/turbomind/core/tensor.h"
 #include "src/turbomind/kernels/gemm/test/test_utils.h"
 #include "src/turbomind/models/attention_weight.h"
 #include "src/turbomind/models/llama/LlamaLinear.h"
@@ -77,6 +80,9 @@ private:
     template<class T>
     Tensor core_attention(Tensor& qkv, const ForwardParam& p, const WeightType& weights);
 
+    template<class T>
+    Tensor core_attention_fmha(Tensor& qkv, const ForwardParam& p, const WeightType& weights);
+
     void qk_norm(Tensor& qkv, const WeightType& weights);
 
 private:
@@ -86,6 +92,7 @@ private:
     const Context&         context_;
     int&                   is_warm_up_;
     const bool             init_;
+    int                    layer_num_;
 
     LlamaLinear& linear_;
     const int    arch_{};
@@ -114,6 +121,18 @@ private:
     Buffer_<int>   mrope_length_buf_;
 
     CpPostContext cp_fn_ctx_;  // context parallel
+
+    // FMHA dispatch state (only non-null when attention_backend=trtllm_fmha on SM10x)
+    bool            fmha_use_{false};
+    int             fmha_sm_count_{0};
+    Tensor_<int8_t> fmha_decode_workspace_;
+    Tensor_<int>    fmha_tile_counter_;
+    Tensor_<float>  fmha_scale_bmm1_;
+    Tensor_<float>  fmha_scale_bmm2_;
+    Tensor_<float>  fmha_fp8_scale_orig_;
+    Tensor_<int8_t> fmha_fp4_k_scales_;
+    Tensor_<int8_t> fmha_fp4_v_scales_;
+    int64_t         fmha_fp4_scale_stride_{0};
 };
 
 }  // namespace turbomind

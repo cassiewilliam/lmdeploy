@@ -58,6 +58,12 @@ public:
         return mask_.data().get();
     }
 
+    // Pre-RoPE Q tensor used as the reference for FMHA Q-output diffs.
+    const T* q() const
+    {
+        return q_.data().get();
+    }
+
 private:
     cudaStream_t                    stream_;
     cublasHandle_t                  cublas_;

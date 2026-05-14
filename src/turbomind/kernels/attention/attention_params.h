@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cuda_runtime.h>
 
+#include "src/turbomind/flashinfer/attention/trtllm_fmha_params.h"
 #include "src/turbomind/models/llama/llama_rope.h"
 
 namespace turbomind {
@@ -90,6 +91,11 @@ struct AttentionParams {
 
     int          arch;
     cudaStream_t stream;
+
+    bool         fuse_attention_quant{false};
+    const float* fp8_scale_inv_ptr{nullptr};
+
+    TrtllmFmhaParams<T> fmha;
 
     // debug
     float* qk;

@@ -407,6 +407,49 @@ struct ConvertKvCache {
     }
 };
 
+template<typename Ti, typename To>
+struct ConvertKvCache<Ti, To,
+                      std::enable_if_t<std::is_same_v<To, __nv_fp8_e4m3>
+                                       && (std::is_same_v<Ti, __nv_bfloat16>
+                                           || std::is_same_v<Ti, __half>)>> {
+    float inv_scale_;
+    Ti    zero_;
+    __device__ __host__ ConvertKvCache(float scale, float zero)
+        : inv_scale_{(scale != 0.f) ? 1.f / (scale + 1e-6f) : 1.f}
+        , zero_{static_cast<Ti>(zero)} {}
+
+    template<int N>
+    __device__ static auto convert(const Array<Ti, N>& vi)
+    {
+        Array<__nv_fp8_e4m3, N> vo;
+        PRAGMA_UNROLL
+        for (int i = 0; i < N; ++i) {
+            vo[i] = (__nv_fp8_e4m3)vi[i];  // null-scale fallback (matches 0.10.0)
+        }
+        return vo;
+    }
+
+    template<int N>
+    inline __device__ auto operator()(const Array<Ti, N>& vi) const -> Array<__nv_fp8_e4m3, N>
+    {
+        Array<__nv_fp8_e4m3, N> vo;
+        PRAGMA_UNROLL
+        for (int i = 0; i < N; ++i) {
+            float val;
+            if constexpr (std::is_same_v<Ti, __nv_bfloat16>) {
+                val = __bfloat162float(vi[i] - zero_);
+            }
+            else {
+                val = __half2float(vi[i] - zero_);
+            }
+            __nv_fp8_storage_t res =
+                __nv_cvt_float_to_fp8(val * inv_scale_, __NV_SATFINITE, __NV_E4M3);
+            vo[i] = *reinterpret_cast<const __nv_fp8_e4m3*>(&res);
+        }
+        return vo;
+    }
+};
+
 // generic case for converting to same type, bypass
 template<typename T>
 struct ConvertKvCache<T, T> {
@@ -488,6 +531,74 @@ struct ConvertKvCache<T, uint4_t> {
         return vo;
     }
 };
+
+template<class T>
+struct ConvertKvCache<T,
+                      fp4_e2m1_t,
+                      std::enable_if_t<std::is_same_v<T, __nv_bfloat16> || std::is_same_v<T, __half>>> {
+    float inv_scale_;
+    T     zero_;
+
+    __device__ __host__ ConvertKvCache(float scale, float zero):
+        inv_scale_{(scale != 0.f) ? 1.f / (scale + 1e-6f) : 1.f}, zero_{static_cast<T>(zero)}
+    {
+    }
+
+    static __device__ uint32_t pack_e2m1(float (&x)[8])
+    {
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+        uint32_t packed;
+        asm volatile(
+            "{\n"
+            ".reg .b8 byte0;\n"
+            ".reg .b8 byte1;\n"
+            ".reg .b8 byte2;\n"
+            ".reg .b8 byte3;\n"
+            "cvt.rn.satfinite.e2m1x2.f32 byte0, %2, %1;\n"
+            "cvt.rn.satfinite.e2m1x2.f32 byte1, %4, %3;\n"
+            "cvt.rn.satfinite.e2m1x2.f32 byte2, %6, %5;\n"
+            "cvt.rn.satfinite.e2m1x2.f32 byte3, %8, %7;\n"
+            "mov.b32 %0, {byte0, byte1, byte2, byte3};\n"
+            "}"
+            : "=r"(packed)
+            : "f"(x[0]), "f"(x[1]), "f"(x[2]), "f"(x[3]), "f"(x[4]), "f"(x[5]), "f"(x[6]), "f"(x[7]));
+        return packed;
+#else
+        return 0;
+#endif
+    }
+
+    template<int N>
+    __device__ static auto convert(const Array<T, N>& vi)
+    {
+        ConvertKvCache<T, fp4_e2m1_t> conv{1.f, 0.f};
+        return conv(vi);
+    }
+
+    template<int N>
+    __device__ auto operator()(const Array<T, N>& vi) const
+    {
+        static_assert(N % 8 == 0);
+        Array<fp4_e2m1_t, N> vo;
+        PRAGMA_UNROLL
+        for (int i = 0; i < N; i += 8) {
+            float tmp[8];
+            PRAGMA_UNROLL
+            for (int j = 0; j < 8; ++j) {
+                if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+                    tmp[j] = __bfloat162float(vi[i + j] - zero_) * inv_scale_;
+                }
+                else {
+                    tmp[j] = __half2float(vi[i + j] - zero_) * inv_scale_;
+                }
+            }
+            auto& chunk      = (Array<fp4_e2m1_t, 8>&)vo[i];
+            (uint32_t&)chunk = pack_e2m1(tmp);
+        }
+        return vo;
+    }
+};
+
 template<>
 struct ConvertKvCache<uint4_t, half> {
 

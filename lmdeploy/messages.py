@@ -20,9 +20,11 @@ logger = get_logger('lmdeploy')
 class QuantPolicy(enum.IntEnum):
     """Quantization policy constants for KV cache."""
     NONE = 0
-    INT4 = 4  # 4-bit KV cache
-    INT8 = 8  # 8-bit KV cache
+    INT4 = 4    # 4-bit KV cache
+    INT8 = 8    # 8-bit KV cache
     TURBO_QUANT = 42  # TurboQuant: K=4bit QJL4 + V=2bit MSE
+    KV_FP8 = 16  # FP8 KV cache (trtllm_fmha backend only)
+    KV_FP4 = 32  # FP4 KV cache (trtllm_fmha backend only)
 
 LogitsProcessor = Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
 """LogitsProcessor is a function that takes a tensor of input_ids, the logits
@@ -305,14 +307,17 @@ class TurbomindEngineConfig:
     communicator: str = 'nccl'
     hf_overrides: dict[str, Any] | None = None
     enable_metrics: bool = True
+    attention_backend: str = 'default'
+    moe_backend: str = 'default'
 
     def __post_init__(self):
         """Check input validation."""
         assert self.dtype in ['auto', 'float16', 'bfloat16']
         assert self.tp >= 1, 'tp must be a positive integer'
         assert self.cache_max_entry_count > 0, 'invalid cache_max_entry_count'
-        assert self.quant_policy in (QuantPolicy.NONE, QuantPolicy.INT4, QuantPolicy.INT8, QuantPolicy.TURBO_QUANT), \
-               'invalid quant_policy'
+        _valid_qp = (QuantPolicy.NONE, QuantPolicy.INT4, QuantPolicy.INT8, QuantPolicy.TURBO_QUANT,
+                     QuantPolicy.KV_FP8, QuantPolicy.KV_FP4)
+        assert self.quant_policy in _valid_qp, 'invalid quant_policy'
         assert self.rope_scaling_factor >= 0, 'invalid rope_scaling_factor'
         assert self.max_prefill_token_num >= 0, \
             'invalid max_prefill_token_num'

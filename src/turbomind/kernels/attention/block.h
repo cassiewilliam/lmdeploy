@@ -16,6 +16,7 @@ template<class T, class Tkv, int HeadDim, bool ShareKV = false>
 struct Config {
     int head_num_;
     int block_len_;
+    int num_layers_ = 0;
 
     TM_HOST_DEVICE constexpr int t_bits() const
     {
@@ -25,6 +26,11 @@ struct Config {
         else {
             return bitsof<T>;
         }
+    }
+
+    TM_HOST_DEVICE int layer_num() const
+    {
+        return num_layers_;
     }
 
     TM_HOST_DEVICE constexpr int q_bits() const
@@ -232,6 +238,150 @@ struct Layout {
     {
         return ti * token_param_size();
     }
+};
+
+template<class Config_>
+struct LayoutBlockPagedKV: public Layout<Config_> {
+    using Config = Config_;
+    using Layout<Config_>::config_;
+
+    TM_HOST_DEVICE LayoutBlockPagedKV(Config config): Layout<Config_>(config) {}
+
+    TM_HOST_DEVICE int page_block_size() const
+    {
+        return 2 * this->config().layer_num() * this->config().head_num() * this->head_data_size();
+    }
+};
+
+template<class Config_>
+struct LayoutLayerPagedKV {
+    using Config = Config_;
+    Config config_;
+
+    TM_HOST_DEVICE LayoutLayerPagedKV(Config config): config_{config} {}
+
+    TM_HOST_DEVICE const Config& config() const
+    {
+        return config_;
+    }
+
+    TM_HOST_DEVICE int token_data_size() const
+    {
+        return config().q_bits() * config().head_dim() / 8;
+    }
+
+    TM_HOST_DEVICE int head_data_size() const
+    {
+        return config().block_len() * token_data_size();
+    }
+
+    TM_HOST_DEVICE int block_size() const
+    {
+        return config().head_num() * config().block_len() * token_data_size();
+    }
+
+    TM_HOST_DEVICE int page_block_size() const
+    {
+        return 2 * config().layer_num() * block_size();
+    }
+
+    TM_HOST_DEVICE int block_data(int block) const
+    {
+        return block * block_size();
+    }
+
+    TM_HOST_DEVICE int head_data(int head) const
+    {
+        return head * head_data_size();
+    }
+
+    TM_HOST_DEVICE int token_data(int ti) const
+    {
+        return ti * token_data_size();
+    }
+
+    TM_HOST_DEVICE int k_data(int head, int token) const
+    {
+        return head_data(head) + token_data(token);
+    }
+
+    TM_HOST_DEVICE int v_data(int head, int token) const
+    {
+        return head_data(head) + token_data(token);
+    }
+};
+
+template<class T, class Tkv, class Layout>
+class HeadLayerPaged {
+public:
+    TM_HOST_DEVICE HeadLayerPaged(Layout     layout,
+                                  int        head_id,
+                                  const int* page_tables,
+                                  int        batch_idx,
+                                  int        max_num_pages_per_seq_kv,
+                                  char*      kv_cache_buffer):
+        layout_{layout},
+        head_id_{head_id},
+        page_tables_{page_tables},
+        batch_idx_{batch_idx},
+        max_num_pages_per_seq_kv_{max_num_pages_per_seq_kv},
+        kv_cache_buffer_{kv_cache_buffer}
+    {
+    }
+
+    TM_HOST_DEVICE void get_block_coord(int seq_ti, int& block_idx, int& block_ti) const
+    {
+        block_idx = seq_ti / block_len();
+        block_ti  = seq_ti % block_len();
+    }
+
+    TM_HOST_DEVICE auto block_len() const
+    {
+        return layout_.config().block_len();
+    }
+
+    // Invoke func(k_cache, v_cache) for timestep ti; silently no-ops when
+    // block_idx or the physical block id is out of range.
+    template<class Func>
+    TM_HOST_DEVICE auto with(int ti, Func&& func) const
+    {
+        int block_idx;
+        int block_ti;
+        get_block_coord(ti, block_idx, block_ti);
+
+        if (block_idx < 0 || block_idx >= max_num_pages_per_seq_kv_) [[unlikely]]
+            return;
+
+        // page_tables layout: [batch_size, 2, max_num_pages_per_seq_kv]
+        const size_t base_offset      = static_cast<size_t>(batch_idx_) * 2 * max_num_pages_per_seq_kv_;
+        const size_t page_table_idx_k = base_offset + block_idx;
+        const size_t page_table_idx_v = base_offset + max_num_pages_per_seq_kv_ + block_idx;
+
+        const int k_physical_block_id = page_tables_[page_table_idx_k];
+        const int v_physical_block_id = page_tables_[page_table_idx_v];
+
+        if (k_physical_block_id < 0 || v_physical_block_id < 0) [[unlikely]]
+            return;
+
+        // 64-bit to avoid INT_MAX overflow at large batch * block counts.
+        const int64_t block_size        = layout_.block_size();
+        const int64_t k_block_offset    = static_cast<int64_t>(k_physical_block_id) * block_size;
+        const int64_t v_block_offset    = static_cast<int64_t>(v_physical_block_id) * block_size;
+        const int     head_token_offset = layout_.k_data(head_id_, block_ti);
+
+        auto k_cache = reinterpret_cast<Tkv*>(kv_cache_buffer_ + k_block_offset + head_token_offset);
+        auto v_cache = reinterpret_cast<Tkv*>(kv_cache_buffer_ + v_block_offset + head_token_offset);
+
+        return ((Func&&)func)(k_cache, v_cache);
+    }
+
+private:
+    Layout     layout_;
+    int        head_id_;
+    const int* page_tables_;
+    int        batch_idx_;
+    int        max_num_pages_per_seq_kv_;
+    char*      kv_cache_buffer_;
 };
 
 template<class Config>

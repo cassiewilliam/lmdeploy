@@ -10,6 +10,6 @@ add_library(engine STATIC
     model_executor.cc
     engine.cc
     )
-target_link_libraries(engine PRIVATE xgrammar core)
+target_link_libraries(engine PRIVATE xgrammar core trtllm_attention)
 set_property(TARGET engine PROPERTY POSITION_INDEPENDENT_CODE  ON)
 set_property(TARGET engine PROPERTY CUDA_RESOLVE_DEVICE_SYMBOLS  ON)

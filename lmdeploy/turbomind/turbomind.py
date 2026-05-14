@@ -251,6 +251,8 @@ class TurboMind:
         ec.nnodes = engine_config.nnodes
         ec.node_rank = engine_config.node_rank
         ec.communicator = engine_config.communicator
+        ec.attention_backend = getattr(engine_config, 'attention_backend', 'default')
+        ec.moe_backend = getattr(engine_config, 'moe_backend', 'default')
 
         logger.info(f'turbomind engine config:\n\n'
                     f'dtype={engine_config.dtype}, session_len={engine_config.session_len}, '

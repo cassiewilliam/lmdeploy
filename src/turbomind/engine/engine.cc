@@ -18,6 +18,7 @@
 
 #include "src/turbomind/core/copy.h"
 #include "src/turbomind/core/logger.h"
+#include "src/turbomind/flashinfer/attention/fmha_engine_helper.h"
 #include "src/turbomind/models/decoder_layer_weight.h"
 #include "src/turbomind/models/delta_net_weight.h"
 #include "src/turbomind/models/language_model.h"
@@ -65,7 +66,7 @@ struct Engine::Impl {
          int                queue_id,
          int                phases);
 
-    void CreateSequenceManager();
+    void CreateSequenceManager(bool use_fmha);
 
     void InternalThreadEntry();
 
@@ -162,6 +163,8 @@ struct Engine::Impl {
     // staging buffers
     Buffer_<void*> block_ptrs_buf_;
     Buffer_<int>   block_ptrs_offsets_buf_;
+
+    std::unique_ptr<flashinfer_attention::FmhaEngineHelper> fmha_helper_;
 };
 
 Engine::Impl::~Impl()
@@ -197,6 +200,17 @@ Engine::Impl::Impl(EngineParam        param,
     model_{std::move(model)},
     weights_{weights}
 {
+    const bool use_fmha = flashinfer_attention::FmhaEngineHelper::ShouldUse(param.attention_backend);
+    if (param.attention_backend == AttentionBackend::kTrtllmFmha) {
+        if (!use_fmha) {
+            TM_LOG_WARNING("[Engine] attention backend=trtllm_fmha requested but device is not SM10x; "
+                           "falling back to default attention.");
+        }
+        else {
+            TM_LOG_INFO("[Engine] attention backend=trtllm_fmha; forcing BlockManager single-chunk allocation.");
+        }
+    }
+
     states_.emplace_back();
 
     for (int i = 0; i < phases; ++i) {
@@ -205,14 +219,19 @@ Engine::Impl::Impl(EngineParam        param,
 
     executor_ = ModelExecutor{model_, ctx, device_id_, outbound_, inbound_};
 
-    CreateSequenceManager();  // initializes `session_len_trunc_`
+    CreateSequenceManager(use_fmha);  // initializes `session_len_trunc_`
 
     const ssize_t max_batch_block_num = param.max_batch_size * cdiv(session_len_trunc_, param_.cache_block_seq_len);
     block_ptrs_buf_                   = {max_batch_block_num, kCPUpinned};
     block_ptrs_offsets_buf_           = {param.max_batch_size + 1, kCPUpinned};
+
+    if (use_fmha) {
+        const int max_pages_cap = cdiv(session_len_trunc_, param_.cache_block_seq_len);
+        fmha_helper_ = std::make_unique<flashinfer_attention::FmhaEngineHelper>(param.max_batch_size, max_pages_cap);
+    }
 }
 
-void Engine::Impl::CreateSequenceManager()
+void Engine::Impl::CreateSequenceManager(bool use_fmha)
 {
     const auto cache_block_seq_len = param_.cache_block_seq_len;
 
@@ -242,6 +261,8 @@ void Engine::Impl::CreateSequenceManager()
         return AllReduce(tp_group_, free, comm::RedOp::kMin);
     };
 
+    const int effective_chunk_size = use_fmha ? -1 : param_.cache_chunk_size;
+
     seq_mgr_ = std::make_unique<SequenceManager>(weights_.head_dim,
                                                  weights_.kv_head_num / param_.attn_tp_size,
                                                  weights_.num_layer,
@@ -258,7 +279,7 @@ void Engine::Impl::CreateSequenceManager()
                                                  param_.attn_tp_size,
                                                  param_.max_batch_size,
                                                  param_.cache_max_block_count,
-                                                 param_.cache_chunk_size,
+                                                 effective_chunk_size,
                                                  param_.enable_prefix_caching,
                                                  tp_rank_,
                                                  param_.attn_cp_size,
@@ -701,6 +722,27 @@ void Engine::Impl::Setup(BatchData& d)
                   {"copy", copy.buf()},
                   {"block_ptrs_offsets", block_ptrs_offsets_buf_},
                   {"block_ptrs", block_ptrs_buf_}};
+
+    if (fmha_helper_) {
+        std::vector<flashinfer_attention::FmhaEngineHelper::SequenceInfo> fmha_sequences;
+        fmha_sequences.reserve(st.active);
+        for (int b = 0; b < st.active; ++b) {
+            const auto& rc     = *st.rc[b];
+            const auto& blocks = rc.seq->blocks;
+            fmha_sequences.push_back({blocks.data(),
+                                      static_cast<int>(blocks.size()),
+                                      rc.history_len + rc.alpha + rc.input_len});
+        }
+        fmha_helper_->Publish(env,
+                              fmha_sequences,
+                              [&](int block_id) { return seq_mgr_->GetBlockPtr(block_id); },
+                              seq_mgr_->total_count(),
+                              model_.model_param(),
+                              dtype_,
+                              model_.attn_param().cache_block_seq_len,
+                              param_.attn_tp_size,
+                              core::Context::stream().handle());
+    }
 
     Run(BatchOp::kSetup, d.phase, env);
 

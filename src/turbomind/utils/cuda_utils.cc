@@ -261,6 +261,21 @@ int getSMCount()
     return sm_count;
 }
 
+int getMaxThreadsPerSM()
+{
+    int device{-1};
+    check_cuda_error(cudaGetDevice(&device));
+    int threads_per_sm{};
+    check_cuda_error(cudaDeviceGetAttribute(&threads_per_sm, cudaDevAttrMaxThreadsPerMultiProcessor, device));
+    return threads_per_sm;
+}
+
+bool isSM10x()
+{
+    const int sm = getSMVersion();
+    return sm == 100 || sm == 103;
+}
+
 std::string getDeviceName()
 {
     int device{-1};

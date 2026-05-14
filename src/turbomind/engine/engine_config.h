@@ -35,7 +35,10 @@ struct EngineConfig {
     X(std::vector<int>, devices)                                                                                       \
     X(int, nnodes)                                                                                                     \
     X(int, node_rank)                                                                                                  \
-    X(std::string, communicator)
+    X(std::string, communicator)                                                                                       \
+    X(std::string, attention_backend, "default")                                                                       \
+    X(std::string, moe_backend, "default")                                                                             \
+    X(bool, enable_pdl, false)
 
     ENGINE_FIELDS(TM_MEMBER)
     TM_FOR_EACH(EngineConfig, ENGINE_FIELDS)

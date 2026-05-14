@@ -274,7 +274,8 @@ class ArgumentHelper:
                                    default=0,
                                    choices=list(QuantPolicy),
                                    help='KV cache quantization policy. '
-                                   '0: no quantization; 4: 4-bit; 8: 8-bit; 42: TurboQuant (K4V2)')
+                                   '0: no quantization; 4: 4-bit; 8: 8-bit; 42: TurboQuant (K4V2); '
+                                   '16: FP8 KV (trtllm_fmha backend only); 32: FP4 KV (trtllm_fmha backend only)')
 
     @staticmethod
     def rope_scaling_factor(parser):
